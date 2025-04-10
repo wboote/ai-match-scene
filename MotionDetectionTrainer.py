@@ -1,92 +1,129 @@
 from flask import Flask, request, jsonify
-from PIL import Image
+import os
 import torch
 import torch.nn as nn
-import torch.optim as optim
-from torchvision import transforms
-from tqdm import tqdm
-import os
+import torchvision.transforms as transforms
+from PIL import Image
+from datetime import datetime
 
-# Settings
-IMAGE_SIZE = (256, 256)
-NUM_EPOCHS = 20
-TOTAL_IMAGES = 2000
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# ------------------ Configuration ------------------
+UPLOAD_FOLDER = 'uploads'
+MODEL_SAVE_EVERY = 100
+IMAGE_SIZE = (720, 1280)  # 720p resolution: height x width
+EPOCHS = 20
 
+# ------------------ Flask App ------------------
 app = Flask(__name__)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-# Autoencoder model
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+
+# ------------------ Autoencoder Model ------------------
 class Autoencoder(nn.Module):
     def __init__(self):
         super(Autoencoder, self).__init__()
         self.encoder = nn.Sequential(
-            nn.Conv2d(3, 16, 3, stride=2, padding=1),   # -> [16, 128, 128]
-            nn.ReLU(True),
-            nn.Conv2d(16, 32, 3, stride=2, padding=1),  # -> [32, 64, 64]
-            nn.ReLU(True)
+            nn.Conv2d(3, 64, 3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 32, 3, stride=2, padding=1),
+            nn.ReLU(),
         )
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(32, 16, 3, stride=2, padding=1, output_padding=1),  # -> [16, 128, 128]
-            nn.ReLU(True),
-            nn.ConvTranspose2d(16, 3, 3, stride=2, padding=1, output_padding=1),   # -> [3, 256, 256]
-            nn.Sigmoid()
+            nn.ConvTranspose2d(32, 64, 3, stride=2, padding=1, output_padding=1),
+            nn.ReLU(),
+            nn.ConvTranspose2d(64, 3, 3, stride=2, padding=1, output_padding=1),
+            nn.Sigmoid(),
         )
 
     def forward(self, x):
-        encoded = self.encoder(x)
-        decoded = self.decoder(encoded)
-        return decoded
+        x = self.encoder(x)
+        x = self.decoder(x)
+        return x
 
-# Instantiate model, loss, optimizer
+# ------------------ List Available CUDA Devices ------------------
+def list_cuda_devices():
+    if torch.cuda.is_available():
+        num_devices = torch.cuda.device_count()
+        print(f"[INFO] Found {num_devices} CUDA device(s).")
+        for i in range(num_devices):
+            device_name = torch.cuda.get_device_name(i)
+            memory_allocated = torch.cuda.memory_allocated(i) / 1024 ** 2  # MB
+            memory_cached = torch.cuda.memory_reserved(i) / 1024 ** 2  # MB
+            print(f"[INFO] Device {i}: {device_name}")
+            print(f"  Memory Allocated: {memory_allocated:.2f} MB")
+            print(f"  Memory Cached: {memory_cached:.2f} MB")
+    else:
+        print("[INFO] No CUDA devices found. Running on CPU.")
+
+# ------------------ Init Model & Optimizer ------------------
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"[INFO] Using device: {device}")
+
+# List available CUDA devices
+list_cuda_devices()
+
 model = Autoencoder().to(device)
 criterion = nn.MSELoss()
-optimizer = optim.Adam(model.parameters(), lr=1e-4)
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
-# Transform image
+# ------------------ Transform ------------------
 transform = transforms.Compose([
-    transforms.Resize(IMAGE_SIZE),
-    transforms.ToTensor()
+    transforms.Resize(IMAGE_SIZE),  # Resize to 720p
+    transforms.ToTensor(),
 ])
 
-# Progress state
-received_images = 0
-pbar = tqdm(total=TOTAL_IMAGES, desc="Training", unit="image")
+image_counter = 0
 
+# ------------------ Endpoint ------------------
 @app.route('/upload', methods=['POST'])
-def upload_image():
-    global received_images
+def upload_and_train():
+    global image_counter
+    try:
+        if 'image' not in request.files:
+            print("[ERROR] No image file part in the request")
+            return jsonify({'error': 'No image provided'}), 400
 
-    if 'image' not in request.files:
-        return jsonify({'error': 'No image uploaded'}), 400
+        file = request.files['image']
+        if file.filename == '':
+            print("[ERROR] Empty filename")
+            return jsonify({'error': 'Empty filename'}), 400
 
-    image_file = request.files['image']
-    image = Image.open(image_file).convert('RGB')
-    image_tensor = transform(image).unsqueeze(0).to(device)
+        image_counter += 1
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{timestamp}_{image_counter}.jpg"
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
+        print(f"[INFO] Received image {filename} (#{image_counter})")
 
-    # Train on the single image for NUM_EPOCHS
-    model.train()
-    for epoch in range(NUM_EPOCHS):
-        optimizer.zero_grad()
-        output = model(image_tensor)
-        loss = criterion(output, image_tensor)
-        loss.backward()
-        optimizer.step()
+        # Load image and train
+        image = Image.open(filepath).convert('RGB')
+        image_tensor = transform(image).unsqueeze(0).to(device)
 
-    received_images += 1
-    pbar.update(1)
+        model.train()
+        for epoch in range(EPOCHS):
+            output = model(image_tensor)
+            loss = criterion(output, image_tensor)
 
-    # Stop condition
-    if received_images >= TOTAL_IMAGES:
-        pbar.close()
-        print("[INFO] Finished training on all images.")
-        os._exit(0)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
-    return jsonify({'status': 'success', 'trained': received_images})
+            print(f"[TRAINING] Image #{image_counter}, Epoch [{epoch+1}/{EPOCHS}] - Loss: {loss.item():.6f}")
 
-@app.route('/progress', methods=['GET'])
-def get_progress():
-    percent = int((received_images / TOTAL_IMAGES) * 100)
-    return jsonify({'progress': percent})
+        # Save model every 100 images
+        if image_counter % MODEL_SAVE_EVERY == 0:
+            model_path = f"autoencoder_{image_counter}.pt"
+            torch.save(model.state_dict(), model_path)
+            print(f"[INFO] Saved model to {model_path}")
 
+        return jsonify({'status': 'trained', 'image_id': image_counter}), 200
+
+    except Exception as e:
+        print(f"[EXCEPTION] {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+# ------------------ Run Server ------------------
 if __name__ == '__main__':
+    print("[SERVER] Starting motion detection training server with 720p input...")
     app.run(host='0.0.0.0', port=5000)
