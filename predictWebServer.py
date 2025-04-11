@@ -1,17 +1,17 @@
 from flask import Flask, request, jsonify
-import os
 import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
 from PIL import Image
 from datetime import datetime
+import os
 
 # ------------------ Configuration ------------------
 UPLOAD_FOLDER = 'uploads'
-MODEL_SAVE_EVERY = 100
-MODEL_FILENAME = 'autoencoder_final.pt'
+MODEL_PATH = 'autoencoder_final.pt'
 IMAGE_SIZE = (720, 1280)  # 720p resolution: height x width
 EPOCHS = 20
+CONFIDENCE_THRESHOLD = 0.9990  # Confidence threshold to determine match
 
 # ------------------ Flask App ------------------
 app = Flask(__name__)
@@ -48,14 +48,15 @@ print(f"[INFO] Using device: {device}")
 
 model = Autoencoder().to(device)
 
-# Load pre-trained model if available
-if os.path.exists(MODEL_FILENAME):
-    model.load_state_dict(torch.load(MODEL_FILENAME, map_location=device))
+# Load the pre-trained model at startup
+if os.path.exists(MODEL_PATH):
+    model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
     model.eval()
-    print(f"[INFO] Loaded pre-trained model from {MODEL_FILENAME}")
+    print(f"[INFO] Loaded model from {MODEL_PATH}")
 else:
-    print("[INFO] No pre-trained model found, starting with new model")
+    print("[ERROR] Model file not found!")
 
+# ------------------ Loss Function & Optimizer ------------------
 criterion = nn.MSELoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
@@ -65,53 +66,43 @@ transform = transforms.Compose([
     transforms.ToTensor(),
 ])
 
-image_counter = 0
-
-# ------------------ Upload and Train Endpoint ------------------
-@app.route('/upload', methods=['POST'])
-def upload_and_train():
-    global image_counter
+# ------------------ Predict Endpoint ------------------
+@app.route('/predict', methods=['POST'])
+def predict():
     try:
         if 'image' not in request.files:
-            print("[ERROR] No image file part in the request")
-            return jsonify({'error': 'No image provided'}), 400
+            return jsonify({'error': 'No image file provided'}), 400
 
         file = request.files['image']
         if file.filename == '':
-            print("[ERROR] Empty filename")
             return jsonify({'error': 'Empty filename'}), 400
 
-        image_counter += 1
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{timestamp}_{image_counter}.jpg"
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(filepath)
-        print(f"[INFO] Received image {filename} (#{image_counter})")
-
-        # Load image and train
-        image = Image.open(filepath).convert('RGB')
+        image = Image.open(file.stream).convert('RGB')
         image_tensor = transform(image).unsqueeze(0).to(device)
 
-        model.train()
-        for epoch in range(EPOCHS):
+        with torch.no_grad():
             output = model(image_tensor)
-            loss = criterion(output, image_tensor)
+            loss = torch.nn.functional.mse_loss(output, image_tensor)
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+        # Compute confidence as 1 - loss
+        confidence = 1 - loss.item()
 
-            print(f"[TRAINING] Image #{image_counter}, Epoch [{epoch+1}/{EPOCHS}] - Loss: {loss.item():.6f}")
+        # Format confidence to 12 decimal points
+        confidence_rounded = round(confidence, 12)
 
-        # Save model every N images
-        if image_counter % MODEL_SAVE_EVERY == 0:
-            torch.save(model.state_dict(), MODEL_FILENAME)
-            print(f"[INFO] Saved model to {MODEL_FILENAME}")
+        # Classification interpretation based on the confidence threshold
+        if confidence_rounded > CONFIDENCE_THRESHOLD:
+            classification = "Match"
+        else:
+            classification = "Not a Match"
 
-        return jsonify({'status': 'trained', 'image_id': image_counter}), 200
+        return jsonify({
+            'status': 'success',
+            'confidence': f'{confidence_rounded:.12f}',  # 12 decimal places
+            'classification': classification
+        }), 200
 
     except Exception as e:
-        print(f"[EXCEPTION] {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 # ------------------ Run Server ------------------
