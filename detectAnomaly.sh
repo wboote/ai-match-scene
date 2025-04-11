@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash 
 
 SERVER_URL="http://192.168.1.2:5000/predict"
 FILENAME="capture.jpg"
