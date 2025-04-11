@@ -13,5 +13,5 @@ run MotionDetectionTrainer.py or predictWebServer.py on the server to train or d
 
 
 TODO: 
-  o requirements.txt
-  o fix the train gphoto2 to use first available device - it think the detect already does this
+  * requirements.txt
+  * fix the train gphoto2 to use first available device - it think the detect already does this
