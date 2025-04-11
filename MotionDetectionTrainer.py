@@ -10,8 +10,8 @@ from datetime import datetime
 UPLOAD_FOLDER = 'uploads'
 IMAGE_SIZE = (720, 1280)
 EPOCHS = 8
-EARLY_STOP_LOSS_THRESHOLD = 0.034
-MAX_IMAGES_WITHOUT_SAVING = 1000
+EARLY_STOP_LOSS_THRESHOLD = 0.0034
+MAX_IMAGES_WITHOUT_SAVING = 400
 
 # ------------------ Flask App ------------------
 app = Flask(__name__)
@@ -50,18 +50,26 @@ model = Autoencoder().to(device)
 criterion = nn.L1Loss()
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
+# Load model if checkpoint exists
+MODEL_PATH = "autoencoder_final.pt"
+if os.path.exists(MODEL_PATH):
+    model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+    print(f"[INFO] Loaded existing model from {MODEL_PATH}")
+
 # ------------------ Transform ------------------
 transform = transforms.Compose([
     transforms.Resize(IMAGE_SIZE),
     transforms.ToTensor(),
 ])
 
+# ------------------ Counters ------------------
 image_counter = 0
+images_since_last_save = 0
 
 # ------------------ Endpoint ------------------
 @app.route('/upload', methods=['POST'])
 def upload_and_train():
-    global image_counter
+    global image_counter, images_since_last_save
     try:
         if 'image' not in request.files:
             return jsonify({'error': 'No image provided'}), 400
@@ -71,6 +79,8 @@ def upload_and_train():
             return jsonify({'error': 'Empty filename'}), 400
 
         image_counter += 1
+        images_since_last_save += 1
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{timestamp}_{image_counter}.jpg"
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
@@ -93,15 +103,16 @@ def upload_and_train():
             print(f"[TRAINING] Image #{image_counter}, Epoch [{epoch+1}/{EPOCHS}] - Loss: {loss.item():.12f}")
 
             if loss.item() < EARLY_STOP_LOSS_THRESHOLD:
-                torch.save(model.state_dict(), "autoencoder_final.pt")
-                print(f"[INFO] Early stopping: loss={loss.item():.12f}. Saved model to autoencoder_final.pt")
+                torch.save(model.state_dict(), MODEL_PATH)
+                print(f"[INFO] Early stopping: loss={loss.item():.12f}. Saved model to {MODEL_PATH}")
+                images_since_last_save = 0
                 saved_early = True
                 break
 
-        # Fallback: save after 1000 images if loss hasn't hit threshold
-        if image_counter >= MAX_IMAGES_WITHOUT_SAVING and not saved_early:
-            torch.save(model.state_dict(), "autoencoder_final.pt")
-            print(f"[INFO] Reached {MAX_IMAGES_WITHOUT_SAVING} images. Saved model to autoencoder_final.pt")
+        if images_since_last_save >= MAX_IMAGES_WITHOUT_SAVING:
+            torch.save(model.state_dict(), MODEL_PATH)
+            print(f"[INFO] Saved model to {MODEL_PATH} after {images_since_last_save} new images.")
+            images_since_last_save = 0
 
         return jsonify({
             'status': 'trained',
