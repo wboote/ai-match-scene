@@ -8,10 +8,10 @@ from datetime import datetime
 
 # ------------------ Configuration ------------------
 UPLOAD_FOLDER = 'uploads'
-MODEL_SAVE_EVERY = 100
-MODEL_FILENAME = 'autoencoder_final.pt'
-IMAGE_SIZE = (720, 1280)  # 720p resolution: height x width
-EPOCHS = 20
+IMAGE_SIZE = (720, 1280)
+EPOCHS = 8
+EARLY_STOP_LOSS_THRESHOLD = 0.001
+MAX_IMAGES_WITHOUT_SAVING = 1000
 
 # ------------------ Flask App ------------------
 app = Flask(__name__)
@@ -47,38 +47,27 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"[INFO] Using device: {device}")
 
 model = Autoencoder().to(device)
-
-# Load pre-trained model if available
-if os.path.exists(MODEL_FILENAME):
-    model.load_state_dict(torch.load(MODEL_FILENAME, map_location=device))
-    model.eval()
-    print(f"[INFO] Loaded pre-trained model from {MODEL_FILENAME}")
-else:
-    print("[INFO] No pre-trained model found, starting with new model")
-
-criterion = nn.MSELoss()
+criterion = nn.L1Loss()
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
 # ------------------ Transform ------------------
 transform = transforms.Compose([
-    transforms.Resize(IMAGE_SIZE),  # Resize to 720p
+    transforms.Resize(IMAGE_SIZE),
     transforms.ToTensor(),
 ])
 
 image_counter = 0
 
-# ------------------ Upload and Train Endpoint ------------------
+# ------------------ Endpoint ------------------
 @app.route('/upload', methods=['POST'])
 def upload_and_train():
     global image_counter
     try:
         if 'image' not in request.files:
-            print("[ERROR] No image file part in the request")
             return jsonify({'error': 'No image provided'}), 400
 
         file = request.files['image']
         if file.filename == '':
-            print("[ERROR] Empty filename")
             return jsonify({'error': 'Empty filename'}), 400
 
         image_counter += 1
@@ -88,11 +77,11 @@ def upload_and_train():
         file.save(filepath)
         print(f"[INFO] Received image {filename} (#{image_counter})")
 
-        # Load image and train
         image = Image.open(filepath).convert('RGB')
         image_tensor = transform(image).unsqueeze(0).to(device)
 
         model.train()
+        saved_early = False
         for epoch in range(EPOCHS):
             output = model(image_tensor)
             loss = criterion(output, image_tensor)
@@ -101,14 +90,24 @@ def upload_and_train():
             loss.backward()
             optimizer.step()
 
-            print(f"[TRAINING] Image #{image_counter}, Epoch [{epoch+1}/{EPOCHS}] - Loss: {loss.item():.6f}")
+            print(f"[TRAINING] Image #{image_counter}, Epoch [{epoch+1}/{EPOCHS}] - Loss: {loss.item():.12f}")
 
-        # Save model every N images
-        if image_counter % MODEL_SAVE_EVERY == 0:
-            torch.save(model.state_dict(), MODEL_FILENAME)
-            print(f"[INFO] Saved model to {MODEL_FILENAME}")
+            if loss.item() < EARLY_STOP_LOSS_THRESHOLD:
+                torch.save(model.state_dict(), "autoencoder_final.pt")
+                print(f"[INFO] Early stopping: loss={loss.item():.12f}. Saved model to autoencoder_final.pt")
+                saved_early = True
+                break
 
-        return jsonify({'status': 'trained', 'image_id': image_counter}), 200
+        # Fallback: save after 1000 images if loss hasn't hit threshold
+        if image_counter >= MAX_IMAGES_WITHOUT_SAVING and not saved_early:
+            torch.save(model.state_dict(), "autoencoder_final.pt")
+            print(f"[INFO] Reached {MAX_IMAGES_WITHOUT_SAVING} images. Saved model to autoencoder_final.pt")
+
+        return jsonify({
+            'status': 'trained',
+            'loss': round(loss.item(), 12),
+            'image_id': image_counter
+        }), 200
 
     except Exception as e:
         print(f"[EXCEPTION] {str(e)}")
