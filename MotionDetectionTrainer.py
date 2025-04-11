@@ -10,7 +10,7 @@ from datetime import datetime
 UPLOAD_FOLDER = 'uploads'
 IMAGE_SIZE = (720, 1280)
 EPOCHS = 8
-EARLY_STOP_LOSS_THRESHOLD = 0.001
+EARLY_STOP_LOSS_THRESHOLD = 0.045
 MAX_IMAGES_WITHOUT_SAVING = 1000
 
 # ------------------ Flask App ------------------

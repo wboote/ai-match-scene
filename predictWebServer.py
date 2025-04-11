@@ -11,7 +11,7 @@ UPLOAD_FOLDER = 'uploads'
 MODEL_PATH = 'autoencoder_final.pt'
 IMAGE_SIZE = (720, 1280)  # 720p resolution: height x width
 EPOCHS = 20
-CONFIDENCE_THRESHOLD = 0.9990  # Confidence threshold to determine match
+CONFIDENCE_THRESHOLD = 0.9972  # Confidence threshold to determine match
 
 # ------------------ Flask App ------------------
 app = Flask(__name__)
