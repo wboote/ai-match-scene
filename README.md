@@ -8,7 +8,7 @@ Server also can "match" if the scene matches or not.
 
 use captureAndPostTrainingImages.sh and detectAnomoly.sh on the remote laptop to feed the camera photos to the server
 
-run MotionDetectionTrainer.py or predictWebServer.py on the server to train or do matching backend processing.
+run TrainAndPredict.py on the server to train or detection backend processing.
 
 
 
